@@ -76,7 +76,7 @@ def normalize_urls(value):
     text = str(value).strip()
     if text.startswith("List(") and text.endswith(")"):
         text = text[5:-1]
-    return re.findall(r'https?://[^\\s\\)\\]"\\']+', text)
+    return re.findall(r"https?://[^\s\)\]]+", text)
 
 
 def extract_secure_url(payload: dict):
