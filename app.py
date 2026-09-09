@@ -255,7 +255,7 @@ def send_callback(callback_url: str, image_url: str, utterance: str):
 
 @app.get("/")
 def home():
-    return "바로찾아 몽땅찾아 서버 정상 작동 중", 200
+    return "바로찾아 몽땅찾아 서버 정상 작동 중<br>운영사: 태교 에이아이 주식회사", 200
 
 
 @app.get("/health")
