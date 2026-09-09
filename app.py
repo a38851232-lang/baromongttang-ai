@@ -19,7 +19,7 @@ PORT = int(os.getenv("PORT", "10000"))
 client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 SYSTEM_PROMPT = """
-너는 '바로몽땅찾아'의 AI 안내자 'AI지혜'다.
+너는 '바로찾아 몽땅찾아'의 AI 안내자 'AI지혜'다.
 
 답변 원칙:
 1. 먼저 답한다.
