@@ -265,7 +265,29 @@ def send_callback(callback_url: str, image_url: str, utterance: str):
 @app.get("/")
 def home():
     return "바로찾아 몽땅찾아 서버 정상 작동 중<br>운영사: 태교 에이아이 주식회사", 200
+def analyze_image(image_url, utterance=""):
+    if not client:
+        raise RuntimeError("OPENAI_API_KEY가 설정되지 않았습니다.")
 
+    prompt = utterance.strip() if utterance else (
+        "이 사진을 자세히 분석해 주세요. "
+        "한문, 현판, 주련, 비문, 족보, 고문서가 있으면 "
+        "보이는 글자를 정확히 판독하고, 뜻을 쉽게 풀이하며, "
+        "확실하지 않은 글자는 추측하지 말고 불확실하다고 표시해 주세요."
+    )
+
+    response = client.responses.create(
+        model=OPENAI_MODEL,
+        input=[{
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": prompt},
+                {"type": "input_image", "image_url": image_url},
+            ],
+        }],
+    )
+
+    return response.output_text
 
 @app.get("/health")
 def health():
