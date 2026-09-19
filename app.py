@@ -124,17 +124,19 @@ def extract_image_url(payload: dict):
     action = payload.get("action") or {}
     params = action.get("params") or {}
     detail_params = action.get("detailParams") or {}
-
+    
     candidates = []
 
-    if "secureimage" in params:
-        candidates.append(params.get("secureimage"))
+    # 파라미터 이름이 무엇이든 모든 이미지 데이터 자동 수집
+    for v in params.values():
+        candidates.append(v)
 
-    detail = detail_params.get("secureimage") or {}
-
-    if isinstance(detail, dict):
-        candidates.append(detail.get("value"))
-        candidates.append(detail.get("origin"))
+    for detail in detail_params.values():
+        if isinstance(detail, dict):
+            candidates.append(detail.get("value"))
+            candidates.append(detail.get("origin"))
+        else:
+            candidates.append(detail)
 
     for raw in candidates:
         if not raw:
