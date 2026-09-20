@@ -733,5 +733,5 @@ def webhook() -> Any:
 if __name__ == "__main__":
     port = int(os.getenv("PORT", "5000"))
     if not OPENAI_API_KEY:
-        logger.warning("OPENAI_API_KEY 가 비어 있습니다. .env 또는 환경변수를 설정하세요.")
+        logger.warning("Genspark/OpenAI API KEY 가 비어 있습니다. .env 또는 환경변수를 설정하세요.")
     app.run(host="0.0.0.0", port=port, debug=os.getenv("FLASK_DEBUG", "false").lower() == "true")
