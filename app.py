@@ -299,21 +299,3 @@ if __name__ == "__main__":
 else:
     # gunicorn 으로 뜰 때도 keep-alive 시작(프리로드 미사용 전제)
     _start_keepalive()
-Copy
-코드 구조 요약
-섹션	줄 범위	역할
-1	122–266	설정 (콜백 모드·스토리지·모델·프롬프트 규칙)
-2	269–287	Flask + 로깅 초기화
-3	290–625	이미지 URL 추출 — 8단계 (extract_image_url)
-4	628–658	다운로드/MIME 판별 유틸
-4-B	661–1146	스토리지 즉시 복사 (Supabase/S3) + 만료 복구
-5	1149–1291	OpenAI Vision (모델·토큰 파라미터·detail 폴백)
-6	1294–1375	카카오 응답 규격 (simpleText 1000자/3개 분할)
-7	1378–1448	콜백 전송 (send_callback)
-8	1451–1582	파이프라인 (SYNC_BUDGET 마감 포함)
-9	1585–1744	/webhook 라우팅 — 콜백 3분기
-10	1747–1871	/debug/extract · /debug/callback · /debug/storage
-11	1874–1916	Render 슬립 방지 + 기동
-이 파일 하나만 배포하면 ① media·secureimage·detailParams·contexts 누락 없는 추출, ② 콜백(auto/always/false) 3모드, ③ Supabase/S3 만료 대응이 모두 동작합니다.
-
-배포 전 확인: STORAGE_BACKEND를 실제로 쓰시려면 Supabase 버킷을 Public으로 만들고 SUPABASE_SERVICE_KEY를 넣어야 하며, STORAGE_BACKEND=none(기본)이면 스토리지 기능만 조용히 꺼지고 나머지는 그대로 동작합니다.
