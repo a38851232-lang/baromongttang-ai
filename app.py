@@ -132,7 +132,7 @@ def health():
 @app.route("/kakao/photo", methods=["POST"])
 def kakao_photo():
     payload = request.get_json(silent=True) or {}
-    
+    print("--- KAKAO PAYLOAD ---", json.dumps(payload, ensure_ascii=False))   
     image_url = extract_image_url(payload)
     
     user_request = payload.get("userRequest") or {}
