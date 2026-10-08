@@ -7,6 +7,8 @@ import logging
 import os
 import re
 import threading
+import time
+import uuid
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -25,7 +27,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger("baromongttang-ai")
 
-VERSION = "4.0.0"
+VERSION = "4.0.1"
+PHOTO_SLOTS = threading.BoundedSemaphore(4)
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "").strip()
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o")
@@ -132,8 +135,10 @@ def _openai_image_input(image_url: str) -> str:
         raise ValueError('non-public image host')
     kakao_hosts = ('kakao.com', 'kakaocdn.net', 'daumcdn.net')
     if not any(hostname == h or hostname.endswith('.' + h) for h in kakao_hosts):
+        logger.info("image_fetch_skipped reason=non_kakao_host host=%s", hostname)
         return image_url
 
+    logger.info("image_fetch_started host=%s", hostname)
     try:
         response = requests.get(image_url, timeout=(3, 10), stream=True,
                                 allow_redirects=False)
@@ -157,6 +162,7 @@ def _openai_image_input(image_url: str) -> str:
             mime = 'image/webp'
         else:
             raise ValueError('unsupported image bytes')
+        logger.info("image_fetch_success host=%s bytes=%s mime=%s", hostname, size, mime)
         return f'data:{mime};base64,{base64.b64encode(data).decode("ascii")}'
     finally:
         if 'response' in locals():
@@ -212,7 +218,8 @@ def analyze_image_with_openai(image_url: str, user_text: str) -> str:
     try:
         image_input = _openai_image_input(image_url)
     except (requests.RequestException, ValueError) as exc:
-        logger.error("image_fetch_failed exception=%s", type(exc).__name__)
+        status = getattr(getattr(exc, 'response', None), 'status_code', None)
+        logger.error("image_fetch_failed exception=%s http=%s", type(exc).__name__, status)
         return "⚠️ 사진 주소를 읽지 못했습니다. 사진을 다시 보내 주세요."
 
     payload = {
@@ -239,6 +246,7 @@ def analyze_image_with_openai(image_url: str, user_text: str) -> str:
         "max_tokens": 1000
     }
 
+    logger.info("ai_request_started model=%s detail=%s", OPENAI_MODEL, OPENAI_IMAGE_DETAIL)
     try:
         response = requests.post(
             "https://api.openai.com/v1/chat/completions",
@@ -250,14 +258,15 @@ def analyze_image_with_openai(image_url: str, user_text: str) -> str:
             data = response.json()
             content = data["choices"][0]["message"].get("content")
             if not isinstance(content, str) or not content.strip():
-                logger.error("openai_failed empty_content")
+                logger.error("ai_response_failed reason=empty_content")
                 return "⚠️ 이미지 분석 답변이 비어 있습니다. 잠시 후 다시 시도해 주세요."
+            logger.info("ai_response_success chars=%s", len(content))
             return content.strip()
 
-        logger.error("openai_failed http=%s", response.status_code)
+        logger.error("ai_response_failed http=%s", response.status_code)
         return f"⚠️ OpenAI 분석 중 오류가 발생했습니다. (상태코드: {response.status_code})"
     except Exception as exc:
-        logger.error("openai_failed exception=%s", type(exc).__name__)
+        logger.error("ai_response_failed exception=%s", type(exc).__name__)
         return "⚠️ 이미지 분석 중 서버 오류가 발생했습니다."
 
 
@@ -278,9 +287,12 @@ def kakao_text_response(text: str):
     })
 
 
-def send_callback(callback_url: str, text: str):
+def send_callback(callback_url: str, text: str, callback_token: Optional[str] = None):
     if not callback_url:
         return
+    headers = {"Content-Type": "application/json"}
+    if callback_token:
+        headers["X-Kakao-Callback-Token"] = callback_token
     payload = {
         "version": "2.0",
         "template": {
@@ -294,14 +306,15 @@ def send_callback(callback_url: str, text: str):
         }
     }
     try:
-        response = requests.post(callback_url, json=payload, timeout=5, allow_redirects=False)
+        response = requests.post(callback_url, json=payload, headers=headers, timeout=10, allow_redirects=False)
         if not 200 <= response.status_code < 300:
             logger.error("callback_failed http=%s", response.status_code)
             return False
         data = response.json()
         status = data.get("status") if isinstance(data, dict) else None
         if status != "SUCCESS":
-            logger.error("callback_failed result=%s", status if status in ("FAIL", "ERROR") else "invalid_response")
+            message = data.get("message") if isinstance(data, dict) else None
+            logger.error("callback_failed result=%s message=%s", status, str(message)[:120])
             return False
         logger.info("callback_success")
         return True
@@ -320,8 +333,13 @@ def health():
 
 @app.route("/kakao/photo", methods=["POST"])
 def kakao_photo():
-    payload = _as_dict(request.get_json(silent=True))
+    request_id = uuid.uuid4().hex[:12]
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        logger.warning("photo_invalid_request request_id=%s", request_id)
+        return kakao_text_response("요청 형식이 올바르지 않습니다."), 400
     user_request = _as_dict(payload.get("userRequest"))
+    logger.info("request_received content_type=%s body_present=%s", request.content_type, bool(payload))
 
     callback_url = user_request.get("callbackUrl")
     callback_url = (
@@ -333,12 +351,19 @@ def kakao_photo():
     utterance = user_request.get("utterance")
     utterance = utterance if isinstance(utterance, str) else ""
 
-    image_url, src_type = extract_image_url(payload)
+    callback_token = request.headers.get("X-Kakao-Callback-Token") or user_request.get("callbackToken")
+    callback_token = callback_token if isinstance(callback_token, str) and callback_token else None
+
+    # Only this request's image; never reuse a previous context's photo.
+    image_url, src_type = extract_image_url({
+        "action": payload.get("action"), "userRequest": user_request
+    })
     logger.info(
-        "photo_request source=%s image_found=%s callback_present=%s",
+        "secureimage_received source=%s image_found=%s callback_present=%s callback_token_present=%s",
         src_type,
         bool(image_url),
         bool(callback_url),
+        bool(callback_token),
     )
 
     if not image_url:
@@ -353,19 +378,42 @@ def kakao_photo():
             "카카오의 ‘사진으로 묻기’에서 사진을 다시 보내 주세요."
         )
 
-    # Prefer Kakao callback when callbackUrl is supplied.
+    if not callback_url:
+        # Preserve the synchronous response path supplied by the final diff.
+        result_text = analyze_image_with_openai(image_url, utterance)
+        logger.info("kakao_response_ready mode=sync chars=%s", len(result_text))
+        return kakao_text_response(result_text)
+
+    # Acknowledge before expensive image download / AI processing.
     if callback_url:
+        if not PHOTO_SLOTS.acquire(blocking=False):
+            return kakao_text_response("사진 처리 요청이 많습니다. 잠시 후 다시 보내 주십시오.")
+
         def background_work():
-            result_text = analyze_image_with_openai(image_url, utterance)
-            send_callback(callback_url, result_text)
+            started = time.monotonic()
+            try:
+                logger.info("photo_analysis_started request_id=%s", request_id)
+                try:
+                    result_text = analyze_image_with_openai(image_url, utterance)
+                except Exception as exc:
+                    logger.error("photo_analysis_failed request_id=%s kind=%s", request_id, type(exc).__name__)
+                    result_text = "사진 분석 중 오류가 발생했습니다. 잠시 후 다시 보내 주십시오."
+                logger.info("photo_analysis_finished request_id=%s elapsed=%.2f error_response=%s",
+                            request_id, time.monotonic() - started, result_text.startswith("⚠️"))
+                delivered = send_callback(callback_url, result_text, callback_token)
+                logger.info("photo_delivery request_id=%s success=%s", request_id, bool(delivered))
+            finally:
+                PHOTO_SLOTS.release()
 
         t = threading.Thread(target=background_work, daemon=True)
-        t.start()
+        try:
+            t.start()
+        except Exception as exc:
+            PHOTO_SLOTS.release()
+            logger.error("photo_worker_failed request_id=%s kind=%s", request_id, type(exc).__name__)
+            return kakao_text_response("사진 처리를 시작하지 못했습니다. 다시 보내 주십시오.")
+        logger.info("kakao_response_ready mode=callback useCallback=true")
         return jsonify({"version": "2.0", "useCallback": True})
-
-    # Preserve synchronous behavior when callbackUrl is unavailable.
-    result_text = analyze_image_with_openai(image_url, utterance)
-    return kakao_text_response(result_text)
 
 
 def _start_keepalive():
